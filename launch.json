@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Cortex Debug",
+            "cwd": "${workspaceRoot}",
+            "executable": "./target/$ARCH$/debug/$NAME$",
+            "request": "launch",
+            "type": "cortex-debug",
+            "servertype": "bmp",
+            "BMPGDBSerialPort": "/dev/cu.usbmodem91AA97BD1",
+            "configFiles": ["openocd.cfg"],
+            "runToMain": true,
+            "svdFile": "/Users/ace/play/stm32/$MCU$.svd",
+            "preLaunchTask": "build",
+            "swoConfig": {
+                "enabled": false,
+                "cpuFrequency": 100000000,
+                "swoFrequency": 1125000,
+                "source": "/dev/cu.usbmodem91AA97BD3",
+                "decoders": [{ "type": "console", "label": "ITM", "port": 0 }]
+            }
+        }
+    ]
+}

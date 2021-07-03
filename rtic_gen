@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+from sys import argv
+from os.path import join as pjoin
+import shutil
+import os
+import subprocess
+import json
+import argparse
+
+
+supported_families = ["STM32F1", "STM32F4"]
+
+
+def cargo_add(crate, features=None):
+    if features is None:
+        call("cargo", "add", crate)
+    else:
+        call("cargo", "add", crate, "--features", " ".join(features))
+
+
+def log(level, msg):
+    print(f"[{level}] {msg}")
+
+
+def warn(msg):
+    log("WARN", msg)
+
+
+def fatal(msg):
+    log("FATAL", msg)
+    raise SystemExit
+
+
+def call(*args):
+    # print(f"calling " + " ".join(args))
+    subprocess.run(args).check_returncode()
+
+
+def sed(fn, cmd):
+    call("sed", "-i", "", "-e", cmd, fn)
+
+
+def comment(start_of_line):
+    return rf"s/\({start_of_line}\)/# \1/"
+
+
+def uncomment(text_after_comment):
+    return rf"s/# \({text_after_comment}\)/\1/"
+
+
+def check_path(path, context=""):
+    if context:
+        context = f"{context} "
+    abspath = os.path.abspath(path)
+    if not abspath == path:
+        warn(
+            f"{context}{path} is not absolute, this may not be what you want (it resolves to {abspath})"
+        )
+    if not os.path.exists(path):
+        fatal(f"{context}{path} does not exist")
+    return abspath
+
+
+def main():
+    gen_root = os.path.dirname(__file__)
+    with open(pjoin(gen_root, "gen_defaults.json"), "rb") as fh:
+        defaults = json.load(fh)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mcu", help="name of mcu to use (e.g. STM32F103)", default=defaults.get("mcu")
+    )
+    parser.add_argument(
+        "--debug-device",
+        help="name of the debug device (e.g. /dev/cu.usbmodemF003)",
+        default=defaults.get("debug_device"),
+    )
+    parser.add_argument(
+        "--uart-device",
+        help="name of the UART/SWO device (e.g. /dev/cu.usbmodemF005)",
+        default=defaults.get("uart_device"),
+    )
+    parser.add_argument("name", help="name of project to generate")
+    args = parser.parse_args()
+    name = args.name
+    mcu = args.mcu.upper()
+
+    mcu_supported = False
+    for family in supported_families:
+        if mcu.startswith(family):
+            mcu_supported = True
+            break
+    if not mcu_supported:
+        raise SystemExit(f"mcu {mcu} not supported :(")
+
+    ok_debug_device = check_path(args.debug_device, "debugger device")
+    ok_uart_device = check_path(args.uart_device, "UART/SWO device")
+    svd_file = pjoin(check_path(defaults["svd_root"], "SVD root"), f"{mcu}.svd")
+    ok_svd_file = check_path(svd_file, "SVD file")
+
+    call(
+        "cargo",
+        "generate",
+        "--git",
+        "https://github.com/rust-embedded/cortex-m-quickstart",
+        "--name",
+        name,
+    )
+
+    os.chdir(name)
+    try:
+        os.remove("build.rs")
+    except:
+        pass
+    try:
+        shutil.rmtree("examples")
+    except:
+        pass
+
+    f1_arch = "thumbv7m-none-eabi"
+    f4_arch = "thumbv7em-none-eabihf"
+    if mcu.startswith("STM32F1"):
+        arch = f1_arch
+        cargo_add("stm32f1xx-hal", [mcu.lower(), "rt"])
+    elif mcu.startswith("STM32F4"):
+        arch = f4_arch
+        cargo_config = pjoin(".cargo", "config")
+        sed(cargo_config, comment(f'target = "{f1_arch}"'))
+        sed(cargo_config, uncomment(f'target = "{f4_arch}"'))
+        sed(cargo_config, f"s/target.{f1_arch}/target.{f4_arch}/")
+        cargo_add("stm32f4", [mcu.lower(), "rt"])
+        cargo_add("stm32f4xx-hal", [mcu.lower(), "rt"])
+
+    with open(pjoin(gen_root, "launch.json"), "rb") as fh:
+        launch_json = json.load(fh)
+
+    config = launch_json["configurations"][0]
+    config["executable"] = f"./target/{arch}/debug/{name}"
+    config["BMPGDBSerialPort"] = ok_debug_device
+
+    config["swoConfig"]["source"] = ok_uart_device
+
+    config["svdFile"] = ok_svd_file
+
+    with open(pjoin(".vscode", "launch.json"), "w") as fh:
+        json.dump(launch_json, fh, indent=4)
+
+    cargo_add("panic-semihosting")
+    cargo_add("cortex-m-rtic")
+    cargo_add("embedded-hal")
+    shutil.copy(pjoin(gen_root, mcu, "memory.x"), ".")
+    shutil.copy(pjoin(gen_root, mcu, "main.rs"), "src")
+    shutil.copy(pjoin(gen_root, "tasks.json"), ".vscode")
+
+
+if __name__ == "__main__":
+    main()

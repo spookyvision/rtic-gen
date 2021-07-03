@@ -1,0 +1,6 @@
+{
+    "svd_root": ".",
+    "debug_device": "/dev/cu.usbmodemC2E0BBC61",
+    "uart_device": "/dev/cu.usbmodemC2E0BBC63",
+    "mcu": "STM32F411"
+}
