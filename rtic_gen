@@ -11,11 +11,13 @@ import argparse
 supported_families = ["STM32F1", "STM32F4"]
 
 
-def cargo_add(crate, features=None):
-    if features is None:
-        call("cargo", "add", crate)
-    else:
-        call("cargo", "add", crate, "--features", " ".join(features))
+def cargo_add(crate, features=None, git=None):
+    cmd = ["cargo", "add", crate]
+    if features is not None:
+        cmd.extend(["--features", " ".join(features)])
+    if git is not None:
+        cmd.extend(["--git", git])
+    call(*cmd)
 
 
 def log(level, msg):
@@ -41,11 +43,11 @@ def sed(fn, cmd):
 
 
 def comment(start_of_line):
-    return rf"s/\({start_of_line}\)/# \1/"
+    return rf"s/^\({start_of_line}\)/# \1/"
 
 
 def uncomment(text_after_comment):
-    return rf"s/# \({text_after_comment}\)/\1/"
+    return rf"s/^# \({text_after_comment}\)/\1/"
 
 
 def check_path(path, context=""):
@@ -70,16 +72,7 @@ def main():
     parser.add_argument(
         "--mcu", help="name of mcu to use (e.g. STM32F103)", default=defaults.get("mcu")
     )
-    parser.add_argument(
-        "--debug-device",
-        help="name of the debug device (e.g. /dev/cu.usbmodemF003)",
-        default=defaults.get("debug_device"),
-    )
-    parser.add_argument(
-        "--uart-device",
-        help="name of the UART/SWO device (e.g. /dev/cu.usbmodemF005)",
-        default=defaults.get("uart_device"),
-    )
+
     parser.add_argument("name", help="name of project to generate")
     args = parser.parse_args()
     name = args.name
@@ -93,16 +86,11 @@ def main():
     if not mcu_supported:
         raise SystemExit(f"mcu {mcu} not supported :(")
 
-    ok_debug_device = check_path(args.debug_device, "debugger device")
-    ok_uart_device = check_path(args.uart_device, "UART/SWO device")
-    svd_file = pjoin(check_path(defaults["svd_root"], "SVD root"), f"{mcu}.svd")
-    ok_svd_file = check_path(svd_file, "SVD file")
-
     call(
         "cargo",
         "generate",
         "--git",
-        "https://github.com/rust-embedded/cortex-m-quickstart",
+        "https://github.com/rust-embedded/cortex-m-quickstart.git",
         "--name",
         name,
     )
@@ -124,33 +112,77 @@ def main():
         cargo_add("stm32f1xx-hal", [mcu.lower(), "rt"])
     elif mcu.startswith("STM32F4"):
         arch = f4_arch
-        cargo_config = pjoin(".cargo", "config")
-        sed(cargo_config, comment(f'target = "{f1_arch}"'))
+        cargo_config = pjoin(".cargo", "config.toml")
+        sed(cargo_config, comment('target = '))
         sed(cargo_config, uncomment(f'target = "{f4_arch}"'))
         sed(cargo_config, f"s/target.{f1_arch}/target.{f4_arch}/")
+        sed(cargo_config,
+            """s_rustflags = \[_rustflags = \["-C", "linker=flip-link", "-C", "link-arg=-Tdefmt.x",_""", )
         cargo_add("stm32f4", [mcu.lower(), "rt"])
         cargo_add("stm32f4xx-hal", [mcu.lower(), "rt"])
 
-    with open(pjoin(gen_root, "launch.json"), "rb") as fh:
-        launch_json = json.load(fh)
-
-    config = launch_json["configurations"][0]
-    config["executable"] = f"./target/{arch}/debug/{name}"
-    config["BMPGDBSerialPort"] = ok_debug_device
-
-    config["swoConfig"]["source"] = ok_uart_device
-
-    config["svdFile"] = ok_svd_file
-
-    with open(pjoin(".vscode", "launch.json"), "w") as fh:
-        json.dump(launch_json, fh, indent=4)
-
-    cargo_add("panic-semihosting")
-    cargo_add("cortex-m-rtic")
+    cargo_add("cortex-m-rtic", git="https://github.com/rtic-rs/cortex-m-rtic.git")
+    cargo_add("defmt")
+    cargo_add("defmt-rtt")
+    cargo_add("panic-probe", features=["print-defmt"])
     cargo_add("embedded-hal")
+
     shutil.copy(pjoin(gen_root, mcu, "memory.x"), ".")
     shutil.copy(pjoin(gen_root, mcu, "main.rs"), "src")
-    shutil.copy(pjoin(gen_root, "tasks.json"), ".vscode")
+
+    sed("Cargo.toml", "s/debug = true/debug = 2/")
+    sed("Cargo.toml", "s/lto = true/lto = 'fat'/")
+    with open("Cargo.toml", "ab") as c_t:
+        c_t.write("""
+debug-assertions = false # <-
+incremental = false
+opt-level = 3 # <-
+overflow-checks = false # <-
+
+# cargo build/run
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = 3 # <-
+overflow-checks = true # <-
+
+# cargo test
+[profile.test]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = 3 # <-
+overflow-checks = true # <-
+
+# cargo test --release
+[profile.bench]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = 3 # <-
+overflow-checks = false # <-
+
+[features]
+# set logging levels here
+default = [
+  "defmt-default",
+]
+
+# do NOT modify these features
+defmt-default = []
+defmt-trace = []
+defmt-debug = []
+defmt-info = []
+defmt-warn = []
+defmt-error = []
+""".encode("ascii"))
+    # keep? (for running tests and such)
+    #shutil.copy(pjoin(gen_root, "tasks.json"), ".vscode")
 
 
 if __name__ == "__main__":
